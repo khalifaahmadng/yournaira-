@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YourNaira — Your Money, Your Voice</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#071813;color:#ecfff3;font:16px system-ui,sans-serif}main{max-width:850px;margin:auto;padding:44px 20px}.tag{color:#9cf5b5}h1{font-size:clamp(40px,7vw,65px);line-height:1.08;margin:10px 0}p{color:#b4ccbb;line-height:1.6}.card{background:#102820;border:1px solid #27533d;border-radius:16px;padding:22px;margin-top:22px}textarea,select,input[type=file]{width:100%;border:1px solid #43654b;border-radius:10px;background:#091b15;color:white;padding:13px;margin:9px 0;font:inherit}button{background:#b8f778;border:0;border-radius:11px;padding:12px 20px;font-weight:700;cursor:pointer}pre{white-space:pre-wrap;word-break:break-word;background:#071813;padding:16px;border-radius:10px}label{display:block;margin-top:10px}a{color:#b8f778}.small{font-size:14px}
+</style></head>
+<body><main>
+<div class="tag">N-ATLAS Innovation Challenge • Prototype</div><h1>YourNaira<span style="color:#b8f778">.</span></h1>
+<p>Your Money, Your Voice. Track expenses and budgets with natural commands. Test typed commands immediately; official NCAIR voice recognition requires setup.</p>
+<section class="card"><h2>Try a money command</h2>
+<form id="textform">
+<label>Message<textarea id="msg" rows="3">I spent ₦1,500 on food</textarea></label>
+<label><input id="consent" type="checkbox"> I agree to anonymous demo event logging</label>
+<button>Send command</button></form><pre id="answer">YourNaira is ready.</pre></section>
+<section class="card"><h2>Voice demo — NCAIR model access required</h2>
+<p class="small">Choose the recording's language. This feature does not work until the official models are accessible and installed.</p>
+<form id="voiceform">
+<label>Speech language <select id="lang"><option value="en-NG">Nigerian-accented English</option><option value="ha">Hausa</option><option value="yo">Yoruba</option><option value="ig">Igbo</option></select></label>
+<label>Audio recording <input type="file" id="audio" accept="audio/*" required></label><button>Transcribe and record</button>
+</form><pre id="voiceanswer">Waiting for audio.</pre></section>
+<p class="small"><a href="/docs">REST API documentation</a> • <a href="/api/validation-template">Blank testing evidence CSV</a> • No real banking connection. Use only fictional amounts.</p>
+</main>
+<script>
+let s=sessionStorage.getItem('yournaira_session');if(!s){s=crypto.randomUUID();sessionStorage.setItem('yournaira_session',s)}
+const out=(id,data)=>document.getElementById(id).textContent=JSON.stringify(data,null,2);
+document.getElementById('textform').onsubmit=async e=>{e.preventDefault();try{let r=await fetch('/api/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:s,text:document.getElementById('msg').value,consent:document.getElementById('consent').checked})});out('answer',await r.json())}catch(err){out('answer',{error:String(err)})}};
+document.getElementById('voiceform').onsubmit=async e=>{e.preventDefault();let f=new FormData();f.append('audio',document.getElementById('audio').files[0]);f.append('session',s);f.append('language',document.getElementById('lang').value);f.append('consent',document.getElementById('consent').checked);out('voiceanswer',{status:'Processing...'});try{let r=await fetch('/api/voice',{method:'POST',body:f});out('voiceanswer',await r.json())}catch(err){out('voiceanswer',{error:String(err)})}};
+</script></body></html>
