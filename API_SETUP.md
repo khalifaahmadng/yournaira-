@@ -19,3 +19,16 @@
 
 ## Not needed yet
 OpenAI, Paystack, bank account access, BVN/NIN, and trading API keys are not required for this prototype.
+
+## Vercel deployment and complete user flow
+- Text: enter an expense, income or budget → Send message → request `/api/message` → ledger → response. `summary` reads only the current browser session. Session storage resets when the browser session ends; there are no accounts yet.
+- Microphone: allow microphone access → dictate → review/edit the text → Send message. Browser speech recognition is a separate service, not the official NCAIR model, and availability depends on browser/language.
+- Upload: select the language → choose a recording → transcribe → review/edit transcript → Send message. Transcribing alone never saves a financial entry.
+- Configure `DATABASE_URL` with a PostgreSQL connection string for persistent shared storage. Without it Vercel uses `/tmp/yournaira_demo.db`, which is disposable and not shared between instances. `DATABASE_URL` takes precedence over `DATABASE_PATH`. Existing SQLite entries are not migrated automatically.
+- Configure one HTTPS dedicated Hugging Face inference endpoint per supported language: `ASR_ENDPOINT_EN_NG`, `ASR_ENDPOINT_HA`, `ASR_ENDPOINT_YO`, `ASR_ENDPOINT_IG`. Each endpoint must serve its corresponding official model listed above, accept raw audio bytes, and return `{"text":"..."}`. Set `HF_TOKEN` privately for endpoint authentication. No endpoint is provisioned by this repository.
+- Hosted upload inference bypasses FFmpeg and local model downloads on Vercel. To run models on your own speech server, install system FFmpeg and `pip install -r requirements-voice.txt`; model access must already be authorized.
+- Redeploy after changing environment variables. `/api/capabilities` reports configuration only; it does not prove model access. Test a known recording before claiming official integration.
+- WhatsApp still requires your Twilio sandbox credentials and webhook configuration above; it cannot be verified without them.
+
+## Verification
+Run `python -m pytest -q`. The tests cover text accounting and session isolation, validation, JSON errors, and a simulated voice transcript followed by user confirmation. They do not prove live speech model access or persistent database connectivity.

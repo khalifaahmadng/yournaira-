@@ -1,20 +1,33 @@
 """FastAPI demo. This is not an authenticated production finance service."""
-import os,uuid,io,csv,hashlib
+import os,uuid,io,csv,hashlib,logging
 from pathlib import Path
 from urllib.parse import urlparse
 import requests
 from fastapi import FastAPI,UploadFile,File,Form,HTTPException,Request
-from fastapi.responses import HTMLResponse,StreamingResponse,Response
+from fastapi.responses import HTMLResponse,StreamingResponse,Response,JSONResponse
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel,Field
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
-from .core import safe_session,handle,record_event
+from .core import safe_session,handle,record_event,connect
 from .natlas import transcribe,OFFICIAL_ASR
 
 ROOT=Path(__file__).resolve().parents[1]
 app=FastAPI(title="YourNaira N-ATLAS Prototype",version="0.2.0")
 templates=Jinja2Templates(directory=str(ROOT/"templates"))
+
+@app.exception_handler(Exception)
+async def server_error(request: Request, error: Exception):
+    logging.getLogger("yournaira").exception("Request failed: %s", request.url.path, exc_info=error)
+    return JSONResponse(status_code=500, content={"detail": "The server could not complete this request. Please try again. If it continues, check the deployment logs."})
+
+@app.get("/api/capabilities")
+def capabilities():
+    hosted = [lang for lang in OFFICIAL_ASR if os.getenv("ASR_ENDPOINT_" + lang.upper().replace("-", "_"))]
+    return {"hosted_voice_languages": hosted, "local_voice": not bool(os.getenv("VERCEL")),
+            "storage": "persistent" if os.getenv("DATABASE_URL") else "temporary" if os.getenv("VERCEL") else "local"}
+
 
 class Message(BaseModel):
     session:str=Field(default_factory=lambda:str(uuid.uuid4()))
@@ -23,7 +36,7 @@ class Message(BaseModel):
 
 @app.get("/",response_class=HTMLResponse)
 def home(request:Request):
-    return templates.TemplateResponse("index.html",{"request":request})
+    return templates.TemplateResponse(request=request,name="index.html",context={})
 
 @app.get("/api/health")
 def health():
@@ -41,12 +54,12 @@ async def voice(audio:UploadFile=File(...),session:str=Form(...),language:str=Fo
     if language not in OFFICIAL_ASR: raise HTTPException(400,"Unsupported language")
     data=await audio.read(8*1024*1024+1)
     if len(data)>8*1024*1024: raise HTTPException(413,"File exceeds 8MB")
-    try: transcript=transcribe(data,Path(audio.filename or "voice.ogg").suffix,language)
-    except Exception as error: raise HTTPException(503,"Official NCAIR ASR unavailable: "+str(error)[:200]) from error
-    session=safe_session(session)
-    action,reply=handle(session,transcript)
-    record_event(session,"web-voice",language,action,True,consent)
-    return {"session":session,"transcript":transcript,"reply":reply,"action":action,"official_asr_used":True,"official_model":OFFICIAL_ASR[language]}
+    try: transcript=await run_in_threadpool(transcribe,data,Path(audio.filename or "voice.ogg").suffix,language)
+    except ValueError as error: raise HTTPException(400,str(error)) from error
+    except Exception as error:
+        logging.getLogger("yournaira").exception("Speech recognition failed")
+        raise HTTPException(503,str(error)[:240]) from error
+    return {"session":safe_session(session),"transcript":transcript,"official_asr_used":True,"official_model":OFFICIAL_ASR[language],"requires_confirmation":True}
 
 @app.post("/twilio/whatsapp")
 async def whatsapp(request:Request):

@@ -1,0 +1,6 @@
+-r requirements.txt
+torch
+transformers
+librosa
+soundfile
+huggingface_hub
