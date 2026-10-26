@@ -10,7 +10,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel,Field
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
-from .core import safe_session,handle,record_event,connect
+from .core import safe_session,handle,record_event,connect,chat_message,chat_history
 from .natlas import transcribe,OFFICIAL_ASR
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -33,6 +33,7 @@ class Message(BaseModel):
     session:str=Field(default_factory=lambda:str(uuid.uuid4()))
     text:str=Field(min_length=1,max_length=600)
     consent:bool=False
+    request_id:str=Field(default_factory=lambda:str(uuid.uuid4()),pattern=r"^[a-zA-Z0-9_-]{3,96}$")
 
 @app.get("/",response_class=HTMLResponse)
 def home(request:Request):
@@ -44,10 +45,18 @@ def health():
 
 @app.post("/api/message")
 def message(data:Message):
+    if not data.text.strip(): raise HTTPException(422,"Please enter a message")
     session=safe_session(data.session)
-    action,reply=handle(session,data.text)
-    record_event(session,"web-text","en-NG",action,False,data.consent)
+    try: action,reply=chat_message(session,data.text.strip(),data.request_id)
+    except ValueError as error: raise HTTPException(409,str(error)) from error
+    try: record_event(session,"web-text","en-NG",action,False,data.consent)
+    except Exception: logging.getLogger("yournaira").exception("Optional event logging failed")
     return {"session":session,"input":data.text,"reply":reply,"action":action,"official_asr_used":False}
+
+@app.get("/api/history")
+def history(session:str):
+    if safe_session(session) != session: raise HTTPException(400,"Invalid session")
+    return JSONResponse({"turns":chat_history(session)},headers={"Cache-Control":"no-store"})
 
 @app.post("/api/voice")
 async def voice(audio:UploadFile=File(...),session:str=Form(...),language:str=Form("ha"),consent:bool=Form(False)):
@@ -59,6 +68,7 @@ async def voice(audio:UploadFile=File(...),session:str=Form(...),language:str=Fo
     except Exception as error:
         logging.getLogger("yournaira").exception("Speech recognition failed")
         raise HTTPException(503,str(error)[:240]) from error
+    if len(transcript)>600: raise HTTPException(422,"The transcript is too long. Please record a shorter message.")
     return {"session":safe_session(session),"transcript":transcript,"official_asr_used":True,"official_model":OFFICIAL_ASR[language],"requires_confirmation":True}
 
 @app.post("/twilio/whatsapp")

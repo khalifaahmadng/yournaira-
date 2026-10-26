@@ -32,3 +32,15 @@ OpenAI, Paystack, bank account access, BVN/NIN, and trading API keys are not req
 
 ## Verification
 Run `python -m pytest -q`. The tests cover text accounting and session isolation, validation, JSON errors, and a simulated voice transcript followed by user confirmation. They do not prove live speech model access or persistent database connectivity.
+
+## Chat interface and recorded voice
+The chat UI uses `/api/message` for text, `/api/history?session=...` for the last 200 conversation turns, and `/api/voice` for transcription only. The server saves each text/reply pair atomically with its ledger action. A stable request ID makes a retry return its previous response without adding the transaction again. PostgreSQL uses a per-session transaction lock; SQLite uses an immediate transaction.
+
+The browser preserves its random session ID in localStorage and migrates the existing sessionStorage ID on first use. This is a prototype identity, not authentication or cross-device account access. Clearing browser data loses the identifier. New conversation starts a separate ledger and chat and stops displaying the previous session; it does not delete database records. Old ledger entries have no chat messages to backfill.
+
+The microphone now uses MediaRecorder, not browser speech recognition. Select Nigerian English or Hausa, record up to 45 seconds, stop, listen, transcribe, edit the resulting draft, then send. Audio is submitted only when Transcribe is pressed. Closing/discarding releases microphone tracks and object URLs; YourNaira does not store the recording. Hosted inference providers have their own data-handling policies. Uploads and recordings are limited to 8 MB.
+
+On Vercel the selected language needs its matching ASR_ENDPOINT_EN_NG or ASR_ENDPOINT_HA. Unconfigured voice controls are disabled while text remains usable. Local inference defaults to CPU to support laptops whose GPUs are incompatible with their installed PyTorch build. English passes `language=en, task=transcribe`; Hausa passes `language=ha, task=transcribe`. The Hausa model still requires a real recording test before claiming successful Hausa inference. Basic Hausa financial phrases with numeric amounts are supported, e.g. `Na kashe naira 500 a abinci`, `Na samu naira 2000`, and `takaitawa`; this is a rule-based financial parser, not unrestricted Hausa conversation.
+
+### Updating the deployed UI
+Fetch and switch to the feature branch after saving any local changes, then deploy using your existing authorized Vercel CLI session. Keep DATABASE_URL set for Production. Neither speech endpoints nor secrets are provisioned by this feature.

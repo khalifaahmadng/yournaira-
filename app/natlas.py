@@ -19,7 +19,7 @@ def get_asr(language):
     from transformers import pipeline
     if language not in OFFICIAL_ASR:
         raise ValueError("Unsupported language")
-    return pipeline("automatic-speech-recognition", model=OFFICIAL_ASR[language], token=os.getenv("HF_TOKEN") or None)
+    return pipeline("automatic-speech-recognition", model=OFFICIAL_ASR[language], token=os.getenv("HF_TOKEN") or None, device=-1)
 
 def transcribe(audio_bytes, suffix, language):
     if language not in OFFICIAL_ASR:
@@ -44,15 +44,15 @@ def transcribe(audio_bytes, suffix, language):
         if not text: raise ValueError("No speech was recognized. Try a clearer recording.")
         return text
     if os.getenv("VERCEL"):
-        raise RuntimeError("Audio transcription is not configured for this language. Use the microphone dictation option or type your message.")
+        raise RuntimeError("Audio transcription is not configured for this language. Type your message while the speech service is being connected.")
     if not shutil.which("ffmpeg"):
         raise RuntimeError("FFmpeg is missing on the speech server. Install FFmpeg or configure a hosted speech endpoint.")
     with tempfile.TemporaryDirectory() as tmp:
         extension = suffix.lower() if suffix.lower() in (".ogg",".opus",".mp3",".wav",".m4a",".mp4",".webm") else ".bin"
         source = Path(tmp) / ("voice"+extension)
-        dest = Path(tmp) / "voice.wav"
+        dest = Path(tmp) / "normalized.wav"
         source.write_bytes(audio_bytes)
-        subprocess.run(["ffmpeg","-nostdin","-y","-loglevel","error","-i",str(source),"-t","45","-ac","1","-ar","16000",str(dest)], check=True, timeout=30, capture_output=True)
-        text = (get_asr(language)(str(dest)).get("text") or "").strip()
+        subprocess.run(["ffmpeg","-nostdin","-y","-loglevel","error","-i",str(source),"-t","45","-ac","1","-ar","16000",str(dest)], check=True, timeout=90, capture_output=True)
+        text = (get_asr(language)(str(dest), generate_kwargs={"language": {"en-NG":"en","ha":"ha","yo":"yo","ig":"ig"}[language], "task":"transcribe"}).get("text") or "").strip()
         if not text: raise ValueError("No speech was recognized. Try a clearer recording.")
         return text
