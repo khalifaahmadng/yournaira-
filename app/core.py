@@ -29,6 +29,7 @@ def connect():
         connection = sqlite3.connect(os.getenv("DATABASE_PATH") or default, timeout=10)
     if not url: connection.row_factory=sqlite3.Row
     connection.executescript("""
+    CREATE TABLE IF NOT EXISTS chat_turns(id TEXT,session TEXT,user_text TEXT,reply TEXT,action TEXT,created_at TEXT, PRIMARY KEY(session,id));
     CREATE TABLE IF NOT EXISTS entries(id TEXT PRIMARY KEY,session TEXT,kind TEXT,amount_kobo BIGINT,category TEXT,created_at TEXT);
     CREATE TABLE IF NOT EXISTS budgets(session TEXT PRIMARY KEY,amount_kobo BIGINT);
     CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,session_hash TEXT,channel TEXT,language TEXT,action TEXT,used_official_asr INTEGER,consent INTEGER,at TEXT);
@@ -66,36 +67,61 @@ def detect(text):
     if amount is None: amount = spoken_amount(normalized)
     if re.search(r"-\s*(?:₦|ngn|n)?\s*\d", normalized): amount=None
     if amount is not None and not (1<=amount<=100000000000): amount=None
-    if re.search(r"\b(summary|balance|report|how much|total|spent so far)\b",normalized): return "summary",None,None
+    if re.search(r"\b(summary|balance|report|how much|total|spent so far|takaitawa|jimla)\b",normalized): return "summary",None,None
     if re.search(r"\b(help|commands|start)\b",normalized): return "help",None,None
-    if re.search(r"\b(budget|limit|cap)\b",normalized): return "budget",amount,"monthly"
-    if re.search(r"\b(income|earned|received|salary|paid me)\b",normalized): return "income",amount,"income"
+    if re.search(r"\b(budget|limit|cap|kasafin)\b",normalized): return "budget",amount,"monthly"
+    if re.search(r"\b(income|earned|received|salary|paid me|na samu|albashi)\b",normalized): return "income",amount,"income"
     if re.search(r"\b(spent|spend|bought|paid for|expense|na kashe)\b",normalized):
-        category="transport" if re.search(r"\b(transport|fuel|bus|taxi)\b",normalized) else "food" if re.search(r"\b(food|lunch|rice|breakfast|dinner)\b",normalized) else "other"
+        category="transport" if re.search(r"\b(transport|fuel|bus|taxi|sufuri|mota)\b",normalized) else "food" if re.search(r"\b(food|lunch|rice|breakfast|dinner|abinci|shinkafa)\b",normalized) else "other"
         return "expense",amount,category
     return "unknown",None,None
 
 def handle(session,text):
-    action,amount,category=detect(text)
     with connect() as db:
-        if action in ("expense","income"):
-            if amount is None: return action,"Please include an amount, e.g. I spent ₦1,500 on food."
-            db.execute("INSERT INTO entries VALUES (?,?,?,?,?,?)",(str(uuid.uuid4()),session,action,amount,category,datetime.now(timezone.utc).isoformat()))
-            return action,f"Recorded ₦{amount/100:,.2f} as {action} ({category}). Say summary to view totals."
-        if action=="budget":
-            if amount is None: return action,"Please include an amount, e.g. Set budget ₦30,000."
-            db.execute("INSERT INTO budgets VALUES (?,?) ON CONFLICT(session) DO UPDATE SET amount_kobo=excluded.amount_kobo",(session,amount))
-            return action,f"Monthly budget recorded: ₦{amount/100:,.2f}."
-        if action=="summary":
-            totals={row["kind"]:row["total"] for row in db.execute("SELECT kind, COALESCE(SUM(amount_kobo),0) total FROM entries WHERE session=? GROUP BY kind",(session,)).fetchall()}
-            earned,spent=totals.get("income",0),totals.get("expense",0)
-            budget=db.execute("SELECT amount_kobo FROM budgets WHERE session=?",(session,)).fetchone()
-            suffix=f" | Budget remaining: ₦{(budget["amount_kobo"]-spent)/100:,.2f}" if budget else ""
-            return action,f"Logged income: ₦{earned/100:,.2f} | Expenses: ₦{spent/100:,.2f} | Net: ₦{(earned-spent)/100:,.2f}{suffix}. Only logged entries are counted."
-        if action=="help": return action,"Try: I spent ₦1,500 on food; I received ₦25,000 salary; Set budget ₦30,000; summary."
-        return "unknown","Could not identify the transaction safely. Nothing was saved."
+        return handle_in_transaction(db,session,text)
+
+def handle_in_transaction(db,session,text):
+    action,amount,category=detect(text)
+    if action in ("expense","income"):
+        if amount is None: return action,"Please include an amount, e.g. I spent ₦1,500 on food."
+        db.execute("INSERT INTO entries VALUES (?,?,?,?,?,?)",(str(uuid.uuid4()),session,action,amount,category,datetime.now(timezone.utc).isoformat()))
+        return action,f"Recorded ₦{amount/100:,.2f} as {action} ({category}). Say summary to view totals."
+    if action=="budget":
+        if amount is None: return action,"Please include an amount, e.g. Set budget ₦30,000."
+        db.execute("INSERT INTO budgets VALUES (?,?) ON CONFLICT(session) DO UPDATE SET amount_kobo=excluded.amount_kobo",(session,amount))
+        return action,f"Monthly budget recorded: ₦{amount/100:,.2f}."
+    if action=="summary":
+        totals={row["kind"]:row["total"] for row in db.execute("SELECT kind, COALESCE(SUM(amount_kobo),0) total FROM entries WHERE session=? GROUP BY kind",(session,)).fetchall()}
+        earned,spent=totals.get("income",0),totals.get("expense",0)
+        budget=db.execute("SELECT amount_kobo FROM budgets WHERE session=?",(session,)).fetchone()
+        suffix=f" | Budget remaining: ₦{(budget['amount_kobo']-spent)/100:,.2f}" if budget else ""
+        return action,f"Logged income: ₦{earned/100:,.2f} | Expenses: ₦{spent/100:,.2f} | Net: ₦{(earned-spent)/100:,.2f}{suffix}. Only logged entries are counted."
+    if action=="help": return action,"Try: I spent ₦1,500 on food; I received ₦25,000 salary; Set budget ₦30,000; summary."
+    return "unknown","Could not identify the transaction safely. Nothing was saved."
 
 def record_event(session,channel,language,action,official,consent):
     if not consent: return
     with connect() as db:
         db.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),hashlib.sha256(session.encode()).hexdigest()[:16],channel,language,action,int(official),1,datetime.now(timezone.utc).isoformat()))
+
+
+def chat_message(session, text, request_id):
+    # Persist the financial action and both messages in one transaction.
+    with connect() as db:
+        if isinstance(db, PostgresConnection):
+            lock = int.from_bytes(hashlib.sha256(session.encode()).digest()[:8], "big", signed=True)
+            db.execute("SELECT pg_advisory_xact_lock(?)", (lock,))
+        else:
+            db.execute("BEGIN IMMEDIATE")
+        existing = db.execute("SELECT user_text,reply,action FROM chat_turns WHERE session=? AND id=?",(session,request_id)).fetchone()
+        if existing:
+            if existing["user_text"] != text: raise ValueError("Request ID already used for a different message")
+            return existing["action"],existing["reply"]
+        action,reply = handle_in_transaction(db,session,text)
+        db.execute("INSERT INTO chat_turns VALUES (?,?,?,?,?,?)",(request_id,session,text,reply,action,datetime.now(timezone.utc).isoformat()))
+        return action,reply
+
+def chat_history(session):
+    with connect() as db:
+        rows=db.execute("SELECT * FROM (SELECT id,user_text,reply,action,created_at FROM chat_turns WHERE session=? ORDER BY created_at DESC,id DESC LIMIT 200) recent ORDER BY created_at,id",(session,)).fetchall()
+        return [dict(row) for row in rows]
